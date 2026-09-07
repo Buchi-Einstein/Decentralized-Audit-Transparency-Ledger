@@ -35,7 +35,7 @@ tokio-postgres = { version = "0.7", features = ["with-uuid-1"] }
 redis = { version = "0.32.0", features = ["tokio-comp", "connection-manager"] }
 
 # Kafka producer/consumer
-rdkafka = { version = "0.38.0", default-features = false, features = [
+rdkafka = { version = "0.39.0", default-features = false, features = [
     "cmake-build",
     "tokio",
 ] }
