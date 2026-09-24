@@ -6046,3 +6046,7 @@ mod data_retention_tests;
 
 #[cfg(test)]
 mod issue365_368_tests;
+
+#[cfg(test)]
+mod rbac_regression_coverage_tests;
+
