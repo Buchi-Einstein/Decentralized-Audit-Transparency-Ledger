@@ -1,0 +1,45 @@
+version: "1.0"
+service_name: "auditledger-anomaly-detection"
+
+pipeline:
+  contamination_rate: 0.01
+  training_interval_hours: 24
+  min_samples_required: 200
+  model_output_path: "model_artifacts/anomaly_model.json"
+
+features:
+  - name: "contract_invocation_rate"
+    description: "Invocations per second on contract entrypoints"
+    weight: 1.0
+  - name: "contract_error_ratio"
+    description: "Proportion of contract calls failing or reverting"
+    weight: 2.0
+  - name: "gas_usage_mean"
+    description: "Average gas consumed per transaction"
+    weight: 1.0
+  - name: "api_request_rate"
+    description: "Inbound HTTP request throughput"
+    weight: 1.0
+  - name: "api_p99_latency_ms"
+    description: "99th percentile response latency in ms"
+    weight: 1.5
+  - name: "api_5xx_ratio"
+    description: "Ratio of 5xx server responses"
+    weight: 2.5
+  - name: "cpu_utilization_ratio"
+    description: "Host/pod CPU usage ratio (0.0 - 1.0)"
+    weight: 1.0
+  - name: "memory_utilization_ratio"
+    description: "Host/pod memory usage ratio (0.0 - 1.0)"
+    weight: 1.0
+
+serving:
+  host: "0.0.0.0"
+  port: 8095
+  max_batch_size: 100
+
+alerting:
+  warning_score_threshold: 0.65
+  critical_score_threshold: 0.85
+  webhook_url: "http://incident-response.monitoring.svc.cluster.local/alerts"
+  prometheus_export_enabled: true
