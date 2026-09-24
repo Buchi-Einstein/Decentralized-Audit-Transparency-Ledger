@@ -1,0 +1,197 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Service Level Objectives & Error Budget Overview",
+      "type": "row"
+    },
+    {
+      "id": 1,
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "title": "API Availability SLO (30d Target: 99.9%)",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "(1 - (job:http_requests_error:ratio_rate1d{job=\"auditledger-api\"})) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 98.0,
+          "max": 100.0,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 99.5 },
+              { "color": "green", "value": 99.9 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "title": "API Error Budget Remaining",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "slo:error_budget_remaining:ratio{job=\"auditledger-api\"} * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 20 },
+              { "color": "yellow", "value": 50 },
+              { "color": "green", "value": 80 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "title": "Bridge Delivery SLO (30d Target: 99.95%)",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "sum(rate(bridge_relayed_events_total{status=\"confirmed\"}[1d])) / sum(rate(bridge_relayed_events_total[1d])) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 99.0,
+          "max": 100.0,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 99.8 },
+              { "color": "green", "value": 99.95 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "title": "Proof Verification Accuracy SLO (Target: 99.99%)",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "sum(rate(verification_evaluations_total{status=\"success\"}[1d])) / sum(rate(verification_evaluations_total[1d])) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 99.5,
+          "max": 100.0,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 99.9 },
+              { "color": "green", "value": 99.99 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "id": 101,
+      "title": "Burn Rate & Error Budget Trends",
+      "type": "row"
+    },
+    {
+      "id": 5,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "title": "Multi-Window Error Budget Burn Rates",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "job:http_requests_error:ratio_rate5m{job=\"auditledger-api\"} / 0.001",
+          "legendFormat": "Burn Rate (5m)",
+          "refId": "A"
+        },
+        {
+          "expr": "job:http_requests_error:ratio_rate1h{job=\"auditledger-api\"} / 0.001",
+          "legendFormat": "Burn Rate (1h)",
+          "refId": "B"
+        },
+        {
+          "expr": "job:http_requests_error:ratio_rate6h{job=\"auditledger-api\"} / 0.001",
+          "legendFormat": "Burn Rate (6h)",
+          "refId": "C"
+        },
+        {
+          "expr": "job:http_requests_error:ratio_rate1d{job=\"auditledger-api\"} / 0.001",
+          "legendFormat": "Burn Rate (24h)",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "title": "Latency Percentiles (p50, p95, p99)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) * 1000",
+          "legendFormat": "p50 (ms)",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) * 1000",
+          "legendFormat": "p95 (ms)",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) * 1000",
+          "legendFormat": "p99 (ms) [SLO: <200ms]",
+          "refId": "C"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["slo", "sli", "observability", "auditledger"],
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "title": "AuditLedger - Service Level Objectives (SLO) Dashboard",
+  "uid": "auditledger-slo-dashboard",
+  "version": 1
+}

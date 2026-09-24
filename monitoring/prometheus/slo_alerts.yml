@@ -1,0 +1,100 @@
+groups:
+  - name: slo_recording_rules
+    interval: 30s
+    rules:
+      # API Availability Error Rates
+      - record: job:http_requests:rate5m
+        expr: sum by (job) (rate(http_requests_total[5m]))
+      - record: job:http_requests_error:rate5m
+        expr: sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+      - record: job:http_requests_error:ratio_rate5m
+        expr: job:http_requests_error:rate5m / job:http_requests:rate5m
+
+      - record: job:http_requests:rate30m
+        expr: sum by (job) (rate(http_requests_total[30m]))
+      - record: job:http_requests_error:rate30m
+        expr: sum by (job) (rate(http_requests_total{status=~"5.."}[30m]))
+      - record: job:http_requests_error:ratio_rate30m
+        expr: job:http_requests_error:rate30m / job:http_requests:rate30m
+
+      - record: job:http_requests:rate1h
+        expr: sum by (job) (rate(http_requests_total[1h]))
+      - record: job:http_requests_error:rate1h
+        expr: sum by (job) (rate(http_requests_total{status=~"5.."}[1h]))
+      - record: job:http_requests_error:ratio_rate1h
+        expr: job:http_requests_error:rate1h / job:http_requests:rate1h
+
+      - record: job:http_requests:rate6h
+        expr: sum by (job) (rate(http_requests_total[6h]))
+      - record: job:http_requests_error:rate6h
+        expr: sum by (job) (rate(http_requests_total{status=~"5.."}[6h]))
+      - record: job:http_requests_error:ratio_rate6h
+        expr: job:http_requests_error:rate6h / job:http_requests:rate6h
+
+      - record: job:http_requests:rate1d
+        expr: sum by (job) (rate(http_requests_total[1d]))
+      - record: job:http_requests_error:rate1d
+        expr: sum by (job) (rate(http_requests_total{status=~"5.."}[1d]))
+      - record: job:http_requests_error:ratio_rate1d
+        expr: job:http_requests_error:rate1d / job:http_requests:rate1d
+
+      # Error Budget Remaining (Target: 99.9% -> Budget: 0.001)
+      - record: slo:error_budget_remaining:ratio
+        expr: 1 - (job:http_requests_error:ratio_rate1d / 0.001)
+
+  - name: slo_burn_rate_alerts
+    rules:
+      # Critical: 1h burn rate > 14.4 (2% budget in 1h) AND 5m burn rate > 14.4
+      - alert: ApiAvailabilityRapidBurnRate
+        expr: |
+          (job:http_requests_error:ratio_rate1h{job="auditledger-api"} > (14.4 * 0.001))
+          and
+          (job:http_requests_error:ratio_rate5m{job="auditledger-api"} > (14.4 * 0.001))
+        for: 2m
+        labels:
+          severity: critical
+          tier: "1"
+          slo: "api-availability"
+        annotations:
+          summary: "High error budget burn rate for AuditLedger API (14.4x over 1h/5m)"
+          description: "AuditLedger API error budget is burning at 14.4x normal rate. 2% of total 30-day budget will be exhausted within 1 hour."
+          runbook_url: "https://docs.auditledger.org/runbooks/slo-burn-rate"
+
+      # Critical: 6h burn rate > 6.0 (5% budget in 6h) AND 30m burn rate > 6.0
+      - alert: ApiAvailabilitySlowBurnRate
+        expr: |
+          (job:http_requests_error:ratio_rate6h{job="auditledger-api"} > (6.0 * 0.001))
+          and
+          (job:http_requests_error:ratio_rate30m{job="auditledger-api"} > (6.0 * 0.001))
+        for: 5m
+        labels:
+          severity: critical
+          tier: "1"
+          slo: "api-availability"
+        annotations:
+          summary: "Sustained error budget burn rate for AuditLedger API (6x over 6h/30m)"
+          description: "AuditLedger API error budget is burning at 6x normal rate. 5% of budget consumed over 6 hours."
+
+      # Warning: 24h burn rate > 3.0 (10% budget in 24h)
+      - alert: ApiAvailabilityBudgetDepletionWarning
+        expr: |
+          (job:http_requests_error:ratio_rate1d{job="auditledger-api"} > (3.0 * 0.001))
+        for: 15m
+        labels:
+          severity: warning
+          tier: "1"
+          slo: "api-availability"
+        annotations:
+          summary: "AuditLedger API 24h error budget consumption elevated (3x burn rate)"
+          description: "AuditLedger API consumed 10% of monthly error budget over past 24 hours."
+
+      # Warning: Error budget remaining critically low (< 10% remaining)
+      - alert: ApiErrorBudgetNearlyExhausted
+        expr: slo:error_budget_remaining:ratio{job="auditledger-api"} < 0.10
+        for: 10m
+        labels:
+          severity: warning
+          tier: "1"
+        annotations:
+          summary: "AuditLedger API Error Budget under 10%"
+          description: "Less than 10% of 30-day error budget remains for AuditLedger API. Feature freeze policy recommended."
