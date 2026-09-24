@@ -1,0 +1,113 @@
+version: "v1"
+metadata:
+  name: "auditledger-service-level-objectives"
+  description: "Comprehensive SLO, SLI, and Error Budget definitions for all AuditLedger services"
+  lastUpdated: "2026-09-24"
+
+services:
+  - name: "auditledger-api"
+    description: "Core HTTP/gRPC API for event submission and querying"
+    owner: "platform-eng"
+    tier: 1
+    slos:
+      - id: "api-availability"
+        name: "API Availability"
+        target: 0.999
+        window: "30d"
+        sli:
+          type: "ratio"
+          description: "Ratio of successful non-5xx HTTP requests to total valid HTTP requests"
+          metricGood: 'sum(rate(http_requests_total{job="auditledger-api",status!~"5.."}[window]))'
+          metricTotal: 'sum(rate(http_requests_total{job="auditledger-api"}[window]))'
+        errorBudget:
+          totalAllowedUnreliability: 0.001
+          unit: "ratio"
+        burnRateAlerts:
+          - windowLong: "1h"
+            windowShort: "5m"
+            burnRate: 14.4
+            budgetConsumedPercent: 2.0
+            severity: "critical"
+            channel: "pagerduty"
+          - windowLong: "6h"
+            windowShort: "30m"
+            burnRate: 6.0
+            budgetConsumedPercent: 5.0
+            severity: "critical"
+            channel: "pagerduty"
+          - windowLong: "24h"
+            windowShort: "2h"
+            burnRate: 3.0
+            budgetConsumedPercent: 10.0
+            severity: "warning"
+            channel: "slack-oncall"
+
+      - id: "api-latency"
+        name: "API Request Latency"
+        target: 0.99
+        window: "30d"
+        sli:
+          type: "latency"
+          description: "Proportion of requests completed in under 200 milliseconds"
+          thresholdMs: 200
+          metricGood: 'sum(rate(http_request_duration_seconds_bucket{job="auditledger-api",le="0.2"}[window]))'
+          metricTotal: 'sum(rate(http_request_duration_seconds_count{job="auditledger-api"}[window]))'
+
+  - name: "bridge-relayer"
+    description: "Cross-chain event relayer and consensus synchronization service"
+    owner: "bridge-eng"
+    tier: 1
+    slos:
+      - id: "bridge-delivery-reliability"
+        name: "Event Relay Delivery Success"
+        target: 0.9995
+        window: "30d"
+        sli:
+          type: "ratio"
+          description: "Ratio of verified acknowledged cross-chain transactions to submitted transactions"
+          metricGood: 'sum(rate(bridge_relayed_events_total{status="confirmed"}[window]))'
+          metricTotal: 'sum(rate(bridge_relayed_events_total[window]))'
+        burnRateAlerts:
+          - windowLong: "1h"
+            windowShort: "5m"
+            burnRate: 14.4
+            budgetConsumedPercent: 2.0
+            severity: "critical"
+            channel: "pagerduty"
+
+      - id: "bridge-sync-lag"
+        name: "Relay Synchronization Freshness"
+        target: 0.99
+        window: "30d"
+        sli:
+          type: "latency"
+          description: "Proportion of events relayed within 5 seconds of ledger confirmation"
+          thresholdSeconds: 5
+          metricGood: 'sum(rate(bridge_relay_delay_seconds_bucket{le="5.0"}[window]))'
+          metricTotal: 'sum(rate(bridge_relay_delay_seconds_count[window]))'
+
+  - name: "verification-engine"
+    description: "Merkle proof generation and cryptographic verification service"
+    owner: "security-eng"
+    tier: 1
+    slos:
+      - id: "verification-correctness"
+        name: "Proof Verification Accuracy"
+        target: 0.9999
+        window: "30d"
+        sli:
+          type: "ratio"
+          description: "Ratio of deterministic proof evaluations without system failure"
+          metricGood: 'sum(rate(verification_evaluations_total{status="success"}[window]))'
+          metricTotal: 'sum(rate(verification_evaluations_total[window]))'
+
+      - id: "verification-latency"
+        name: "Proof Verification Latency"
+        target: 0.95
+        window: "30d"
+        sli:
+          type: "latency"
+          description: "Proportion of proof verifications completing in under 100ms"
+          thresholdMs: 100
+          metricGood: 'sum(rate(verification_duration_seconds_bucket{le="0.1"}[window]))'
+          metricTotal: 'sum(rate(verification_duration_seconds_count[window]))'
