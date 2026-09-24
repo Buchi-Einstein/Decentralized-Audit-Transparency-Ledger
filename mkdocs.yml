@@ -67,6 +67,9 @@ nav:
       - GDPR: docs/compliance/gdpr.md
       - MiCA: docs/compliance/mica.md
       - Event Policy-as-Code Guide: docs/compliance/contract-event-compliance-guide.md
+  - API & SDK Reference:
+      - API Reference: docs/api-reference.md
+      - SDK Reference: docs/api-sdk-reference/index.md
   - Architecture Decision Records:
       - Index: docs/adr/ADR-001-append-only-log.md
       - Compliance Policy-as-Code: docs/adr/ADR-015-contract-event-compliance-policy-as-code.md
