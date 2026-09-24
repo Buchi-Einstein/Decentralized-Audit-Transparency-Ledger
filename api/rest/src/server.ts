@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import yaml from "js-yaml";
 
-import { resolvers } from "../../graphql/src/resolvers";
+import { EVENT_LOGGED, pubsub, resolvers } from "../../graphql/src/resolvers";
 import {
   export_events,
   exportCsv,
@@ -239,6 +239,73 @@ v1.get("/events", (req, res) => {
 
   setPaginationHeaders(res, "/events", total, limit, offset, nextCursor, prevCursor);
   res.json({ data: result });
+});
+
+v1.get("/events/stream", async (req, res) => {
+  type StreamEvent = {
+    index: number;
+    timestamp: number;
+    event_type: string;
+    submitter: string;
+    [key: string]: unknown;
+  };
+
+  const type = typeof req.query.type === "string" ? req.query.type : undefined;
+  const submitter = typeof req.query.submitter === "string" ? req.query.submitter : undefined;
+  const startTimeValue = Number.parseInt(String(req.query.startTime ?? ""), 10);
+  const endTimeValue = Number.parseInt(String(req.query.endTime ?? ""), 10);
+  const startTime = Number.isFinite(startTimeValue) ? startTimeValue : undefined;
+  const endTime = Number.isFinite(endTimeValue) ? endTimeValue : undefined;
+  const requestedId = Number.parseInt(String(req.get("Last-Event-ID") ?? req.query.afterIndex ?? "-1"), 10);
+  let lastSentIndex = Number.isFinite(requestedId) ? requestedId : -1;
+  let closed = false;
+
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const matches = (event: StreamEvent): boolean => {
+    if (type !== undefined && event.event_type !== type) return false;
+    if (submitter !== undefined && !event.submitter.includes(submitter)) return false;
+    if (startTime !== undefined && event.timestamp < startTime) return false;
+    if (endTime !== undefined && event.timestamp > endTime) return false;
+    return true;
+  };
+
+  const send = (event: StreamEvent): void => {
+    if (closed || event.index <= lastSentIndex || !matches(event)) return;
+    lastSentIndex = event.index;
+    res.write(`id: ${event.index}\nevent: event_logged\ndata: ${JSON.stringify(event)}\n\n`);
+  };
+
+  const iterator = pubsub.asyncIterableIterator(EVENT_LOGGED);
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(": keep-alive\n\n");
+  }, 15000);
+
+  res.on("close", () => {
+    closed = true;
+    clearInterval(heartbeat);
+    void iterator.return?.();
+  });
+
+  try {
+    const filter = { type, submitter, startTime, endTime };
+    const initialEvents = resolvers.Query.events(null, { limit: 100000, offset: 0, filter }) as unknown as StreamEvent[];
+    initialEvents.forEach(send);
+
+    for await (const payload of iterator) {
+      const event = (payload as { eventLogged?: StreamEvent }).eventLogged;
+      if (event) send(event);
+    }
+  } catch (error) {
+    if (!closed) {
+      res.status(500).end(error instanceof Error ? error.message : "event stream failed");
+    }
+  }
 });
 
 // GET /events/:index - Get event by index
