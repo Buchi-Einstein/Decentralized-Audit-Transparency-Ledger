@@ -11,7 +11,7 @@ soroban-sdk = "27.0.6"
 
 [dev-dependencies]
 soroban-sdk = { version = "27.0.6", features = ["testutils"] }
-rand = "0.9"
+rand = "0.10"
 proptest = "1"
 
 # ── Testcontainers integration-test dependencies ───────────────────────────────

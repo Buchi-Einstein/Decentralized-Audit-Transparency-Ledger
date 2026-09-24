@@ -265,7 +265,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "proptest",
- "rand 0.9.5",
+ "rand 0.10.2",
  "rdkafka",
  "redis",
  "reqwest",
