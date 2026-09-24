@@ -11,7 +11,7 @@ soroban-sdk = "27.0.6"
 
 [dev-dependencies]
 soroban-sdk = { version = "27.0.6", features = ["testutils"] }
-rand = "0.9"
+rand = "0.10"
 proptest = "1"
 
 # ── Testcontainers integration-test dependencies ───────────────────────────────
@@ -32,10 +32,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"
 tokio-postgres = { version = "0.7", features = ["with-uuid-1"] }
 
 # Redis async client
-redis = { version = "0.32.0", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }
 
 # Kafka producer/consumer
-rdkafka = { version = "0.38.0", default-features = false, features = [
+rdkafka = { version = "0.39.0", default-features = false, features = [
     "cmake-build",
     "tokio",
 ] }
@@ -57,7 +57,7 @@ uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 
 # Serial-test macro for tests that must NOT run in parallel
-serial_test = "3.1"
+serial_test = "4.0"
 
 [profile.release]
 opt-level = "z"
