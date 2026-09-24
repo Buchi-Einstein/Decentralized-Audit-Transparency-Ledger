@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bridge-relayer-ha-sa
+  namespace: bridge-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bridge-relayer-ha-role
+  namespace: bridge-system
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "watch", "list", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "endpoints", "configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bridge-relayer-ha-rolebinding
+  namespace: bridge-system
+subjects:
+  - kind: ServiceAccount
+    name: bridge-relayer-ha-sa
+    namespace: bridge-system
+roleRef:
+  kind: Role
+  name: bridge-relayer-ha-role
+  apiGroup: rbac.authorization.k8s.io
