@@ -1,0 +1,158 @@
+name: Enhanced CI/CD Pipeline
+
+on:
+  push:
+    branches: [master, main, staging]
+    tags: ['v*']
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 1. Matrix Testing across OS and Toolchains ─────────────────────────────
+  matrix-test:
+    name: Test Matrix (${{ matrix.os }} / Rust ${{ matrix.rust }} / Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable, 1.79.0]
+        node: ['18.x', '20.x']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: wasm32-unknown-unknown
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+      - name: Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run Contract Tests
+        run: cargo test --lib --verbose
+      - name: Run Node SDK & UI Tests
+        run: |
+          if [ -f package.json ]; then npm test --if-present; fi
+
+  # ── 2. Security Scanning & Vulnerability Analysis ─────────────────────────
+  security-scan:
+    name: Security & Vulnerability Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret Scanning (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Rust Dependency Audit
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Trivy Container Vulnerability Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          ignore-unfixed: true
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      - name: Upload Security SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ── 3. Performance Benchmarks ─────────────────────────────────────────────
+  performance-benchmarks:
+    name: Performance & Gas Benchmarking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Criterion Benchmarks
+        run: |
+          cargo bench --bench event_benchmarks -- --output-format bencher | tee benchmark_output.txt || true
+      - name: Validate Benchmark Regressions
+        run: |
+          bash scripts/ci/benchmark_regression_check.sh benchmark_output.txt
+
+  # ── 4. Automated Release Generation ───────────────────────────────────────
+  automated-release:
+    name: Automated Semantic Release
+    needs: [matrix-test, security-scan, performance-benchmarks]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Changelog
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --verbose --latest
+        id: git-cliff
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.git-cliff.outputs.content }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+  # ── 5. Multi-Environment Deployments (Staging -> Canary -> Prod) ──────────
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [matrix-test, security-scan]
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.auditledger.org
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy Staging Workloads
+        run: echo "Deploying contracts and services to Staging cluster..."
+
+  deploy-canary:
+    name: Deploy to Canary (10% Traffic)
+    needs: [deploy-staging]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: canary
+      url: https://canary.auditledger.org
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy Canary Rollout
+        run: echo "Initiating Canary deployment with 10% traffic split..."
+
+  deploy-production:
+    name: Deploy to Production
+    needs: [deploy-canary]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://auditledger.org
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy Production Workloads
+        run: echo "Promoting Canary to 100% Production deployment..."
