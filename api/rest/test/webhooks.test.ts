@@ -57,6 +57,7 @@ describe("webhook delivery", () => {
     expect(first[0]).toMatchObject({ status: "delivered", attempts: 2, responseStatus: 200 });
     expect(second[0]).toEqual(first[0]);
     expect(transport).toHaveBeenCalledTimes(2);
+    expect(transport.mock.calls[0][1]?.headers).toMatchObject({ "x-idempotency-key": `${webhook.id}:event-1` });
     expect(webhook.eventTypes).toEqual(["payment"]);
   });
 

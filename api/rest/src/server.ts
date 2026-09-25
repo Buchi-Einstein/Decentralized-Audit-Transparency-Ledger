@@ -224,13 +224,14 @@ app.use((req, res, next) => {
 // ── Versioned Routes (#271) ───────────────────────────────────────────────────
 
 const v1 = express.Router();
+const webhookAdmin = [bearerAuth, requireScopes(["admin:webhooks"]), requireRole("admin")];
 
 // Webhook management and testing (#435)
-v1.get("/webhooks", (_req, res) => {
+v1.get("/webhooks", ...webhookAdmin, (_req, res) => {
   res.json({ data: listWebhooks() });
 });
 
-v1.post("/webhooks", (req, res) => {
+v1.post("/webhooks", ...webhookAdmin, (req, res) => {
   const { url, secret, eventTypes } = req.body ?? {};
   if (!url || !secret) return res.status(400).json({ error: "url and secret are required" });
   try {
@@ -241,12 +242,12 @@ v1.post("/webhooks", (req, res) => {
   }
 });
 
-v1.delete("/webhooks/:id", (req, res) => {
+v1.delete("/webhooks/:id", ...webhookAdmin, (req, res) => {
   if (!removeWebhook(req.params.id)) return res.status(404).json({ error: "webhook not found" });
   res.status(204).end();
 });
 
-v1.post("/webhooks/:id/test", async (req, res) => {
+v1.post("/webhooks/:id/test", ...webhookAdmin, async (req, res) => {
   const webhook = getWebhook(req.params.id);
   if (!webhook) return res.status(404).json({ error: "webhook not found" });
   const event = {

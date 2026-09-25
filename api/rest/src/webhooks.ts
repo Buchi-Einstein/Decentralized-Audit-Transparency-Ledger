@@ -24,6 +24,7 @@ export interface WebhookDelivery {
 export interface WebhookEvent {
   id: string;
   event_type: string;
+  timestamp?: number;
 }
 
 const DEFAULT_REPLAY_WINDOW_MS = 5 * 60 * 1000;
@@ -130,6 +131,7 @@ export async function deliverWebhook(
         headers: {
           "content-type": "application/json",
           "x-audit-event-id": event.id,
+          "x-idempotency-key": idempotencyKey,
           "x-audit-event-signature": `sha256=${signature}`,
           "x-audit-event-timestamp": String(timestamp),
         },
