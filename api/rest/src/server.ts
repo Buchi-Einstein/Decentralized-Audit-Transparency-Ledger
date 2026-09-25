@@ -30,6 +30,12 @@ import {
 } from "@audit-ledger/security";
 import { authorizationServer, OAUTH_ISSUER, wafRuleEngine, createConfiguredRateLimitStore } from "./security";
 import { createComplianceRouter } from "./compliance";
+import {
+  createCacheStore,
+  createCacheBackedMiddleware,
+  warmEventCache,
+  invalidateEventCache,
+} from "./eventCache";
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -185,6 +191,30 @@ app.get("/metrics", (_req, res) => {
   ];
   res.setHeader("Content-Type", "text/plain; version=0.0.4");
   res.send(lines.join("\n"));
+});
+
+// ── Distributed event cache (#443) ───────────────────────────────────────────
+// Backed by memory (default), Redis/Redis Cluster, or Memcached — selected via
+// CACHE_BACKEND / REDIS_URL / REDIS_CLUSTER_ENDPOINTS / MEMCACHED_SERVERS.
+
+const eventCacheStore = createCacheStore();
+
+app.use(createCacheBackedMiddleware(eventCacheStore));
+
+app.get("/v1/cache", async (_req, res) => {
+  const health = await eventCacheStore.health();
+  res.json({
+    data: {
+      backend: eventCacheStore.name,
+      status: health.ok ? "ok" : "degraded",
+      latencyMs: health.latencyMs,
+    },
+  });
+});
+
+app.post("/v1/cache/invalidate", async (_req, res) => {
+  const removed = await invalidateEventCache(eventCacheStore);
+  res.json({ data: { message: "Cache invalidated successfully", removed } });
 });
 
 // ── Version Middleware (#271) ─────────────────────────────────────────────────
@@ -443,7 +473,25 @@ if (require.main === module) {
     console.log(`  Export:    /v1/export/events.{json,csv}, /v1/export/events/stream`);
     console.log(`  OAuth2:    /oauth/{authorize,token,jwks.json}, /.well-known/openid-configuration`);
     console.log(`  Admin:     /v1/admin/{keys,waf} (requires admin role + scope)`);
+    console.log(`  Cache:     /v1/cache${eventCacheStore.name !== "memory" ? ` (backend: ${eventCacheStore.name})` : " (memory)"}`);
   });
 }
+
+// Warm the cache with the most popular queries so the first real caller gets a
+// HIT instead of paying the cold path (#443).
+void warmEventCache(eventCacheStore, [
+  {
+    key: "/v1/stats",
+    value: JSON.stringify({ data: resolvers.Query.statistics(null, {}, null) }),
+  },
+  {
+    key: "/v1/events",
+    value: JSON.stringify({
+      data: resolvers.Query.events(null, { limit: DEFAULT_PAGE_SIZE, offset: 0, filter: null }),
+    }),
+  },
+]).catch(() => {
+  // Warming must never prevent the API from booting.
+});
 
 export { app };
