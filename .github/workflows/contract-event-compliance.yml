@@ -35,6 +35,35 @@ jobs:
         run: |
           opa test policies/compliance/ -v
 
+  event-schema-versioning:
+    name: Contract Event Schema Versioning & Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run event versioning & migration tests
+        run: |
+          cargo test --package events --lib versioning -- --nocapture
+
+      - name: Verify schema compatibility and deprecation policies
+        run: |
+          cargo test --package events --lib compatibility -- --nocapture
+
   compliance-evaluation-and-drift:
     name: Continuous Compliance & Drift Detection
     runs-on: ubuntu-latest
