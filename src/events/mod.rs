@@ -1,179 +1,385 @@
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+//! Event system module.
+//!
+//! Provides the core event types, the event bus used to publish and subscribe
+//! to events, and data lineage / provenance tracking for events as they flow
+//! through the pipeline.
 
-/// A single event in the system.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
+
+/// A single event flowing through the system.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub id: String,
     pub kind: String,
-    pub payload: String,
-    /// Groups events that belong to the same logical flow/transaction.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub correlation_id: Option<String>,
-    /// The id of the event that directly caused this event.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub causation_id: Option<String>,
+    pub payload: Vec<u8>,
 }
 
 impl Event {
-    pub fn new(id: impl Into<String>, kind: impl Into<String>, payload: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<String>, kind: impl Into<String>, payload: Vec<u8>) -> Self {
         Self {
             id: id.into(),
             kind: kind.into(),
-            payload: payload.into(),
-            correlation_id: None,
-            causation_id: None,
+            payload,
+        }
+    }
+}
+
+/// Identifies the system or component that produced an event.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EventOrigin {
+    /// Source system that emitted the event (e.g. "contract-runtime").
+    pub source_system: String,
+    /// Actor responsible for the event (user, service, or contract id).
+    pub actor: String,
+    /// Wall-clock timestamp (millis since epoch) at which the event originated.
+    pub timestamp_ms: u64,
+    /// Stable identifiers associated with the origin (tx hash, block, etc.).
+    pub identifiers: Vec<String>,
+}
+
+impl EventOrigin {
+    pub fn new(
+        source_system: impl Into<String>,
+        actor: impl Into<String>,
+        timestamp_ms: u64,
+    ) -> Self {
+        Self {
+            source_system: source_system.into(),
+            actor: actor.into(),
+            timestamp_ms,
+            identifiers: Vec::new(),
         }
     }
 
-    /// Attach a correlation id, grouping this event with related events.
-    pub fn with_correlation_id(mut self, correlation_id: impl Into<String>) -> Self {
-        self.correlation_id = Some(correlation_id.into());
-        self
-    }
-
-    /// Attach a causation id, recording the event that caused this one.
-    pub fn with_causation_id(mut self, causation_id: impl Into<String>) -> Self {
-        self.causation_id = Some(causation_id.into());
+    pub fn with_identifier(mut self, id: impl Into<String>) -> Self {
+        self.identifiers.push(id.into());
         self
     }
 }
 
-/// In-memory store supporting correlation/causation queries and graph building.
-#[derive(Debug, Default, Clone)]
-pub struct EventStore {
-    events: Vec<Event>,
+/// A transformation applied to an event as it flows through the pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventTransformation {
+    /// Name of the transformation stage (e.g. "normalize", "redact").
+    pub stage: String,
+    /// Component that performed the transformation.
+    pub processor: String,
+    /// Timestamp (millis since epoch) at which the transformation ran.
+    pub timestamp_ms: u64,
+    /// Optional human-readable description of what changed.
+    pub description: String,
 }
 
-impl EventStore {
+impl EventTransformation {
+    pub fn new(
+        stage: impl Into<String>,
+        processor: impl Into<String>,
+        timestamp_ms: u64,
+    ) -> Self {
+        Self {
+            stage: stage.into(),
+            processor: processor.into(),
+            timestamp_ms,
+            description: String::new(),
+        }
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+}
+
+/// A downstream consumer that received an event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventConsumer {
+    /// Identifier of the consuming system or component.
+    pub consumer: String,
+    /// Timestamp (millis since epoch) at which the event was consumed.
+    pub timestamp_ms: u64,
+}
+
+impl EventConsumer {
+    pub fn new(consumer: impl Into<String>, timestamp_ms: u64) -> Self {
+        Self {
+            consumer: consumer.into(),
+            timestamp_ms,
+        }
+    }
+}
+
+/// Full lineage record for a single event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventLineage {
+    pub event_id: String,
+    pub origin: EventOrigin,
+    pub transformations: Vec<EventTransformation>,
+    pub consumers: Vec<EventConsumer>,
+}
+
+impl EventLineage {
+    pub fn new(event_id: impl Into<String>, origin: EventOrigin) -> Self {
+        Self {
+            event_id: event_id.into(),
+            origin,
+            transformations: Vec::new(),
+            consumers: Vec::new(),
+        }
+    }
+
+    /// Record a transformation applied to the event.
+    pub fn record_transformation(&mut self, transformation: EventTransformation) {
+        self.transformations.push(transformation);
+    }
+
+    /// Record a downstream consumer of the event.
+    pub fn record_consumer(&mut self, consumer: EventConsumer) {
+        self.consumers.push(consumer);
+    }
+}
+
+/// A node in the lineage graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LineageNode {
+    /// The origin of an event.
+    Origin(String),
+    /// A transformation stage applied to an event.
+    Transformation(String),
+    /// A downstream consumer of an event.
+    Consumer(String),
+}
+
+/// A directed edge in the lineage graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LineageEdge {
+    pub from: LineageNode,
+    pub to: LineageNode,
+}
+
+/// Graph representation connecting origins, transformations, and consumers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LineageGraph {
+    pub nodes: HashSet<LineageNode>,
+    pub edges: HashSet<LineageEdge>,
+}
+
+impl LineageGraph {
     pub fn new() -> Self {
-        Self { events: Vec::new() }
+        Self::default()
     }
 
-    pub fn append(&mut self, event: Event) {
-        self.events.push(event);
+    fn add_edge(&mut self, from: LineageNode, to: LineageNode) {
+        self.nodes.insert(from.clone());
+        self.nodes.insert(to.clone());
+        self.edges.insert(LineageEdge { from, to });
     }
 
-    pub fn all(&self) -> &[Event] {
-        &self.events
-    }
+    /// Build a lineage graph from a single event's lineage record.
+    pub fn from_lineage(lineage: &EventLineage) -> Self {
+        let mut graph = Self::new();
+        let origin = LineageNode::Origin(lineage.origin.source_system.clone());
+        graph.nodes.insert(origin.clone());
 
-    /// Retrieve every event sharing the given correlation id.
-    pub fn by_correlation_id(&self, correlation_id: &str) -> Vec<&Event> {
-        self.events
-            .iter()
-            .filter(|e| e.correlation_id.as_deref() == Some(correlation_id))
-            .collect()
-    }
-
-    /// Retrieve every event directly caused by the given event id.
-    pub fn by_causation_id(&self, causation_id: &str) -> Vec<&Event> {
-        self.events
-            .iter()
-            .filter(|e| e.causation_id.as_deref() == Some(causation_id))
-            .collect()
-    }
-
-    /// Build the full cause-effect graph reachable from a root event id.
-    pub fn causation_graph(&self, root_id: &str) -> CausationGraph {
-        let mut graph = CausationGraph::default();
-        let mut visited: HashSet<&str> = HashSet::new();
-        let mut queue: VecDeque<&str> = VecDeque::new();
-
-        if let Some(root) = self.events.iter().find(|e| e.id == root_id) {
-            graph.nodes.push(root.id.clone());
-            visited.insert(root.id.as_str());
-            queue.push_back(root.id.as_str());
+        let mut previous = origin;
+        for transformation in &lineage.transformations {
+            let node = LineageNode::Transformation(transformation.stage.clone());
+            graph.add_edge(previous, node.clone());
+            previous = node;
         }
-
-        while let Some(current) = queue.pop_front() {
-            for child in self.by_causation_id(current) {
-                graph.edges.push((current.to_string(), child.id.clone()));
-                if visited.insert(child.id.as_str()) {
-                    graph.nodes.push(child.id.clone());
-                    queue.push_back(child.id.as_str());
-                }
-            }
+        for consumer in &lineage.consumers {
+            let node = LineageNode::Consumer(consumer.consumer.clone());
+            graph.add_edge(previous.clone(), node);
         }
-
         graph
     }
 
-    /// Build a graph of all events sharing a correlation id.
-    pub fn correlation_graph(&self, correlation_id: &str) -> CausationGraph {
-        let mut graph = CausationGraph::default();
-        let members = self.by_correlation_id(correlation_id);
-        let ids: HashSet<&str> = members.iter().map(|e| e.id.as_str()).collect();
+    /// Compute the downstream consumers reachable from a given node.
+    pub fn downstream_consumers(&self, from: &LineageNode) -> Vec<String> {
+        let mut visited: HashSet<LineageNode> = HashSet::new();
+        let mut queue: VecDeque<LineageNode> = VecDeque::new();
+        let mut consumers: Vec<String> = Vec::new();
+        queue.push_back(from.clone());
+        visited.insert(from.clone());
 
-        for event in &members {
-            graph.nodes.push(event.id.clone());
-            if let Some(cause) = event.causation_id.as_deref() {
-                if ids.contains(cause) {
-                    graph.edges.push((cause.to_string(), event.id.clone()));
+        while let Some(node) = queue.pop_front() {
+            if let LineageNode::Consumer(name) = &node {
+                if !consumers.contains(name) {
+                    consumers.push(name.clone());
+                }
+            }
+            for edge in &self.edges {
+                if &edge.from == &node && visited.insert(edge.to.clone()) {
+                    queue.push_back(edge.to.clone());
                 }
             }
         }
-
-        graph
+        consumers
     }
 }
 
-/// A directed graph of events linked by causation relationships.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CausationGraph {
-    pub nodes: Vec<String>,
-    pub edges: Vec<(String, String)>,
+/// Impact analysis for an event: which consumers are affected by a change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImpactAnalysis {
+    pub event_id: String,
+    pub affected_consumers: Vec<String>,
+    pub transformation_count: usize,
 }
 
-impl CausationGraph {
-    /// Render the graph as a simple adjacency map for visualization.
-    pub fn adjacency(&self) -> HashMap<String, Vec<String>> {
-        let mut map: HashMap<String, Vec<String>> = HashMap::new();
-        for node in &self.nodes {
-            map.entry(node.clone()).or_default();
+impl ImpactAnalysis {
+    /// Analyze the impact of an event based on its lineage record.
+    pub fn analyze(lineage: &EventLineage) -> Self {
+        let graph = LineageGraph::from_lineage(lineage);
+        let origin = LineageNode::Origin(lineage.origin.source_system.clone());
+        Self {
+            event_id: lineage.event_id.clone(),
+            affected_consumers: graph.downstream_consumers(&origin),
+            transformation_count: lineage.transformations.len(),
         }
-        for (from, to) in &self.edges {
-            map.entry(from.clone()).or_default().push(to.clone());
-        }
-        map
-    }
-
-    /// Emit a DOT representation suitable for graph visualization tooling.
-    pub fn to_dot(&self) -> String {
-        let mut out = String::from("digraph causation {\n");
-        for node in &self.nodes {
-            out.push_str(&format!("  \"{}\";\n", node));
-        }
-        for (from, to) in &self.edges {
-            out.push_str(&format!("  \"{}\" -> \"{}\";\n", from, to));
-        }
-        out.push_str("}\n");
-        out
     }
 }
 
-/// Alert raised when a correlation chain exceeds an expected depth.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CorrelationAlert {
-    pub correlation_id: String,
-    pub depth: usize,
-    pub threshold: usize,
+/// A compliance report summarizing lineage for a set of events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComplianceReport {
+    pub total_events: usize,
+    pub total_transformations: usize,
+    pub total_consumers: usize,
+    pub events: Vec<EventLineage>,
 }
 
-/// Evaluate a correlation chain and raise an alert if it is too deep.
-pub fn check_correlation_depth(
-    store: &EventStore,
-    correlation_id: &str,
-    threshold: usize,
-) -> Option<CorrelationAlert> {
-    let depth = store.by_correlation_id(correlation_id).len();
-    if depth > threshold {
-        Some(CorrelationAlert {
-            correlation_id: correlation_id.to_string(),
-            depth,
-            threshold,
-        })
-    } else {
-        None
+impl ComplianceReport {
+    pub fn from_lineages(lineages: &[EventLineage]) -> Self {
+        let total_transformations = lineages.iter().map(|l| l.transformations.len()).sum();
+        let total_consumers = lineages.iter().map(|l| l.consumers.len()).sum();
+        Self {
+            total_events: lineages.len(),
+            total_transformations,
+            total_consumers,
+            events: lineages.to_vec(),
+        }
+    }
+}
+
+/// Tracks lineage and provenance for events flowing through the pipeline.
+#[derive(Debug, Default)]
+pub struct LineageTracker {
+    lineages: HashMap<String, EventLineage>,
+}
+
+impl LineageTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register the origin of an event, starting its lineage record.
+    pub fn track_origin(&mut self, event_id: impl Into<String>, origin: EventOrigin) {
+        let event_id = event_id.into();
+        self.lineages
+            .entry(event_id.clone())
+            .or_insert_with(|| EventLineage::new(event_id, origin));
+    }
+
+    /// Record a transformation applied to an event.
+    pub fn track_transformation(
+        &mut self,
+        event_id: &str,
+        transformation: EventTransformation,
+    ) {
+        if let Some(lineage) = self.lineages.get_mut(event_id) {
+            lineage.record_transformation(transformation);
+        }
+    }
+
+    /// Record a downstream consumer of an event.
+    pub fn track_consumer(&mut self, event_id: &str, consumer: EventConsumer) {
+        if let Some(lineage) = self.lineages.get_mut(event_id) {
+            lineage.record_consumer(consumer);
+        }
+    }
+
+    /// Retrieve the lineage record for an event.
+    pub fn lineage(&self, event_id: &str) -> Option<&EventLineage> {
+        self.lineages.get(event_id)
+    }
+
+    /// Build the lineage graph for an event.
+    pub fn graph(&self, event_id: &str) -> Option<LineageGraph> {
+        self.lineages.get(event_id).map(LineageGraph::from_lineage)
+    }
+
+    /// Perform impact analysis for an event.
+    pub fn impact(&self, event_id: &str) -> Option<ImpactAnalysis> {
+        self.lineages.get(event_id).map(ImpactAnalysis::analyze)
+    }
+
+    /// Produce a compliance report across all tracked events.
+    pub fn compliance_report(&self) -> ComplianceReport {
+        let lineages: Vec<EventLineage> = self.lineages.values().cloned().collect();
+        ComplianceReport::from_lineages(&lineages)
+    }
+}
+
+/// Shared, thread-safe lineage tracker.
+pub type SharedLineageTracker = Arc<Mutex<LineageTracker>>;
+
+/// Create a new shared lineage tracker.
+pub fn shared_lineage_tracker() -> SharedLineageTracker {
+    Arc::new(Mutex::new(LineageTracker::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracks_origin_transformations_and_consumers() {
+        let mut tracker = LineageTracker::new();
+        tracker.track_origin(
+            "evt-1",
+            EventOrigin::new("contract-runtime", "alice", 1_000).with_identifier("tx-abc"),
+        );
+        tracker.track_transformation(
+            "evt-1",
+            EventTransformation::new("normalize", "pipeline", 1_010),
+        );
+        tracker.track_consumer("evt-1", EventConsumer::new("indexer", 1_020));
+
+        let lineage = tracker.lineage("evt-1").expect("lineage exists");
+        assert_eq!(lineage.origin.source_system, "contract-runtime");
+        assert_eq!(lineage.transformations.len(), 1);
+        assert_eq!(lineage.consumers.len(), 1);
+    }
+
+    #[test]
+    fn builds_lineage_graph_and_impact() {
+        let mut tracker = LineageTracker::new();
+        tracker.track_origin("evt-2", EventOrigin::new("runtime", "bob", 2_000));
+        tracker.track_transformation(
+            "evt-2",
+            EventTransformation::new("redact", "pipeline", 2_010),
+        );
+        tracker.track_consumer("evt-2", EventConsumer::new("audit", 2_020));
+
+        let graph = tracker.graph("evt-2").expect("graph exists");
+        assert!(graph.nodes.contains(&LineageNode::Origin("runtime".into())));
+        assert!(graph
+            .nodes
+            .contains(&LineageNode::Transformation("redact".into())));
+
+        let impact = tracker.impact("evt-2").expect("impact exists");
+        assert_eq!(impact.affected_consumers, vec!["audit".to_string()]);
+        assert_eq!(impact.transformation_count, 1);
+    }
+
+    #[test]
+    fn produces_compliance_report() {
+        let mut tracker = LineageTracker::new();
+        tracker.track_origin("evt-3", EventOrigin::new("runtime", "carol", 3_000));
+        tracker.track_consumer("evt-3", EventConsumer::new("warehouse", 3_010));
+
+        let report = tracker.compliance_report();
+        assert_eq!(report.total_events, 1);
+        assert_eq!(report.total_consumers, 1);
     }
 }

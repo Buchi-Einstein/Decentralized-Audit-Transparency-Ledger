@@ -157,6 +157,29 @@ paths:
         "200":
           description: Current export status
 
+  /events/stream:
+    get:
+      summary: Stream audit events with server-sent events
+      operationId: streamEvents
+      tags: [events]
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/FilterType"
+        - $ref: "#/components/parameters/FilterSubmitter"
+        - $ref: "#/components/parameters/FilterStartTime"
+        - $ref: "#/components/parameters/FilterEndTime"
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
   /events:
     get:
       summary: List events with pagination and filtering
@@ -474,6 +497,9 @@ components:
       type: object
       description: An immutable audit event stored on-chain
       properties:
+        id:
+          type: string
+          description: Stable event identifier
         index:
           type: integer
           description: Sequential event index
@@ -496,6 +522,7 @@ components:
           type: string
           description: Hash of the previous event in the chain
       required:
+        - id
         - index
         - timestamp
         - event_type
@@ -521,6 +548,11 @@ components:
         offset:
           type: integer
           description: Offset used
+      required:
+        - data
+        - total
+        - limit
+        - offset
 
     Statistics:
       type: object
@@ -548,10 +580,29 @@ components:
       description: Error response
       properties:
         error:
-          type: string
-          description: Human-readable error message
-        details:
-          type: array
-          items:
-            type: string
-          description: List of specific validation failures
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code
+            message:
+              type: string
+              description: Human-readable error message
+            details:
+              type: array
+              description: Specific validation failures
+              items:
+                type: object
+                required:
+                  - field
+                  - message
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+      required:
+        - error
