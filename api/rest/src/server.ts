@@ -30,6 +30,15 @@ import {
 } from "@audit-ledger/security";
 import { authorizationServer, OAUTH_ISSUER, wafRuleEngine, createConfiguredRateLimitStore } from "./security";
 import { createComplianceRouter } from "./compliance";
+import {
+  deliverEvent,
+  deliverWebhook,
+  getWebhook,
+  listWebhooks,
+  registerWebhook,
+  removeWebhook,
+  verifySignature,
+} from "./webhooks";
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -215,6 +224,49 @@ app.use((req, res, next) => {
 // ── Versioned Routes (#271) ───────────────────────────────────────────────────
 
 const v1 = express.Router();
+
+// Webhook management and testing (#435)
+v1.get("/webhooks", (_req, res) => {
+  res.json({ data: listWebhooks() });
+});
+
+v1.post("/webhooks", (req, res) => {
+  const { url, secret, eventTypes } = req.body ?? {};
+  if (!url || !secret) return res.status(400).json({ error: "url and secret are required" });
+  try {
+    const webhook = registerWebhook({ url, secret, eventTypes });
+    res.status(201).json({ data: { ...webhook, secret: "[redacted]" } });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "invalid webhook" });
+  }
+});
+
+v1.delete("/webhooks/:id", (req, res) => {
+  if (!removeWebhook(req.params.id)) return res.status(404).json({ error: "webhook not found" });
+  res.status(204).end();
+});
+
+v1.post("/webhooks/:id/test", async (req, res) => {
+  const webhook = getWebhook(req.params.id);
+  if (!webhook) return res.status(404).json({ error: "webhook not found" });
+  const event = {
+    id: `test-${Date.now()}`,
+    event_type: "webhook_test",
+    timestamp: Math.floor(Date.now() / 1000),
+  };
+  const delivery = await deliverWebhook(webhook, event);
+  res.status(delivery.status === "delivered" ? 200 : 502).json({ data: delivery });
+});
+
+v1.post("/webhooks/verify", (req, res) => {
+  const { secret, body, signature, timestamp } = req.body ?? {};
+  if (typeof secret !== "string" || typeof body !== "string" || typeof signature !== "string" || !Number.isInteger(timestamp)) {
+    return res.status(400).json({ error: "secret, body, signature, and integer timestamp are required" });
+  }
+  const result = verifySignature({ secret, body, signature, timestamp });
+  res.status(result.valid ? 200 : 401).json(result);
+});
+
 
 // GET /events - List all events with pagination
 v1.get("/events", (req, res) => {
