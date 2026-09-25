@@ -31,10 +31,11 @@ import {
 import { authorizationServer, OAUTH_ISSUER, wafRuleEngine, createConfiguredRateLimitStore } from "./security";
 import { createComplianceRouter } from "./compliance";
 import {
-  createVersioningMiddleware,
-  versionsHandler,
-  versionRegistryFromEnv,
-} from "./versioning";
+  createCacheStore,
+  createCacheBackedMiddleware,
+  warmEventCache,
+  invalidateEventCache,
+} from "./eventCache";
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -94,6 +95,14 @@ app.use(
     },
   })
 );
+
+// ── Per-client quotas with token-bucket burst handling (#444) ────────────────
+// On top of the global limiter above, each client (API key role, explicit
+// x-quota-tier header, or "default") gets its own token bucket with burst
+// headroom. Buckets live in the same shared store, so quotas coordinate
+// across instances when RATE_LIMIT_BACKEND=redis-cluster.
+
+app.use("/v1", createClientQuotaMiddleware(rateLimitStore));
 
 // ── OAuth2 / OIDC ────────────────────────────────────────────────────────────
 // Mounts /oauth/{authorize,token,jwks.json,introspect,revoke} and the
@@ -192,11 +201,39 @@ app.get("/metrics", (_req, res) => {
   res.send(lines.join("\n"));
 });
 
-// ── Version Middleware + deprecation schedule (#271, #445) ───────────────────
-// URL versioning (/vN/...), header versioning (Accept-Version /
-// X-API-Version), deprecation headers, and a /versions discovery endpoint.
-// Multiple versions run concurrently: v0 is a deprecated alias of v1 until its
-// scheduled sunset. See docs/api-versioning.md for the migration guide.
+// ── Distributed event cache (#443) ───────────────────────────────────────────
+// Backed by memory (default), Redis/Redis Cluster, or Memcached — selected via
+// CACHE_BACKEND / REDIS_URL / REDIS_CLUSTER_ENDPOINTS / MEMCACHED_SERVERS.
+
+const eventCacheStore = createCacheStore();
+
+app.use(createCacheBackedMiddleware(eventCacheStore));
+
+app.get("/v1/cache", async (_req, res) => {
+  const health = await eventCacheStore.health();
+  res.json({
+    data: {
+      backend: eventCacheStore.name,
+      status: health.ok ? "ok" : "degraded",
+      latencyMs: health.latencyMs,
+    },
+  });
+});
+
+app.post("/v1/cache/invalidate", async (_req, res) => {
+  const removed = await invalidateEventCache(eventCacheStore);
+  res.json({ data: { message: "Cache invalidated successfully", removed } });
+});
+
+// ── Version Middleware (#271) ─────────────────────────────────────────────────
+
+const SUPPORTED_VERSIONS = ["v1"];
+const DEPRECATED_VERSIONS: Record<string, string> = {};
+const LATEST_VERSION = "v1";
+
+app.use((req, res, next) => {
+  res.setHeader("X-API-Version", LATEST_VERSION);
+  res.setHeader("X-Supported-Versions", SUPPORTED_VERSIONS.join(", "));
 
 const versionRegistry = versionRegistryFromEnv();
 
@@ -445,7 +482,25 @@ if (require.main === module) {
     console.log(`  Export:    /v1/export/events.{json,csv}, /v1/export/events/stream`);
     console.log(`  OAuth2:    /oauth/{authorize,token,jwks.json}, /.well-known/openid-configuration`);
     console.log(`  Admin:     /v1/admin/{keys,waf} (requires admin role + scope)`);
+    console.log(`  Cache:     /v1/cache${eventCacheStore.name !== "memory" ? ` (backend: ${eventCacheStore.name})` : " (memory)"}`);
   });
 }
+
+// Warm the cache with the most popular queries so the first real caller gets a
+// HIT instead of paying the cold path (#443).
+void warmEventCache(eventCacheStore, [
+  {
+    key: "/v1/stats",
+    value: JSON.stringify({ data: resolvers.Query.statistics(null, {}, null) }),
+  },
+  {
+    key: "/v1/events",
+    value: JSON.stringify({
+      data: resolvers.Query.events(null, { limit: DEFAULT_PAGE_SIZE, offset: 0, filter: null }),
+    }),
+  },
+]).catch(() => {
+  // Warming must never prevent the API from booting.
+});
 
 export { app };
