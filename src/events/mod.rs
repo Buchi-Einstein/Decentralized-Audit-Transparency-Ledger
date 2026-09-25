@@ -1,229 +1,385 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+//! Event system module.
+//!
+//! Provides the core event types, the event bus used to publish and subscribe
+//! to events, and data lineage / provenance tracking for events as they flow
+//! through the pipeline.
 
-/// Metadata attached to a contract event that is searchable.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EventMetadata {
-    pub name: String,
-    pub contract: String,
-    pub description: String,
-    pub tags: Vec<String>,
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
+
+/// A single event flowing through the system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub id: String,
+    pub kind: String,
+    pub payload: Vec<u8>,
 }
 
-impl EventMetadata {
-    /// Collect the searchable text fields for this event.
-    fn searchable_fields(&self) -> Vec<&str> {
-        let mut fields = vec![self.name.as_str(), self.contract.as_str(), self.description.as_str()];
-        for tag in &self.tags {
-            fields.push(tag.as_str());
+impl Event {
+    pub fn new(id: impl Into<String>, kind: impl Into<String>, payload: Vec<u8>) -> Self {
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            payload,
         }
-        fields
     }
 }
 
-/// A single search hit with its relevance score and highlighted fields.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SearchHit {
+/// Identifies the system or component that produced an event.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EventOrigin {
+    /// Source system that emitted the event (e.g. "contract-runtime").
+    pub source_system: String,
+    /// Actor responsible for the event (user, service, or contract id).
+    pub actor: String,
+    /// Wall-clock timestamp (millis since epoch) at which the event originated.
+    pub timestamp_ms: u64,
+    /// Stable identifiers associated with the origin (tx hash, block, etc.).
+    pub identifiers: Vec<String>,
+}
+
+impl EventOrigin {
+    pub fn new(
+        source_system: impl Into<String>,
+        actor: impl Into<String>,
+        timestamp_ms: u64,
+    ) -> Self {
+        Self {
+            source_system: source_system.into(),
+            actor: actor.into(),
+            timestamp_ms,
+            identifiers: Vec::new(),
+        }
+    }
+
+    pub fn with_identifier(mut self, id: impl Into<String>) -> Self {
+        self.identifiers.push(id.into());
+        self
+    }
+}
+
+/// A transformation applied to an event as it flows through the pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventTransformation {
+    /// Name of the transformation stage (e.g. "normalize", "redact").
+    pub stage: String,
+    /// Component that performed the transformation.
+    pub processor: String,
+    /// Timestamp (millis since epoch) at which the transformation ran.
+    pub timestamp_ms: u64,
+    /// Optional human-readable description of what changed.
+    pub description: String,
+}
+
+impl EventTransformation {
+    pub fn new(
+        stage: impl Into<String>,
+        processor: impl Into<String>,
+        timestamp_ms: u64,
+    ) -> Self {
+        Self {
+            stage: stage.into(),
+            processor: processor.into(),
+            timestamp_ms,
+            description: String::new(),
+        }
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+}
+
+/// A downstream consumer that received an event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventConsumer {
+    /// Identifier of the consuming system or component.
+    pub consumer: String,
+    /// Timestamp (millis since epoch) at which the event was consumed.
+    pub timestamp_ms: u64,
+}
+
+impl EventConsumer {
+    pub fn new(consumer: impl Into<String>, timestamp_ms: u64) -> Self {
+        Self {
+            consumer: consumer.into(),
+            timestamp_ms,
+        }
+    }
+}
+
+/// Full lineage record for a single event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventLineage {
     pub event_id: String,
-    pub score: f64,
-    pub highlights: Vec<String>,
+    pub origin: EventOrigin,
+    pub transformations: Vec<EventTransformation>,
+    pub consumers: Vec<EventConsumer>,
 }
 
-/// Full-text search index over contract event metadata.
-///
-/// Maintains an inverted index from stemmed terms to the events that contain
-/// them, supporting full-text queries, fuzzy matching, ranking and highlighting.
-#[derive(Debug, Default)]
-pub struct EventSearchIndex {
-    /// stemmed term -> event id -> term frequency
-    inverted: HashMap<String, HashMap<String, usize>>,
-    /// event id -> original metadata
-    metadata: HashMap<String, EventMetadata>,
+impl EventLineage {
+    pub fn new(event_id: impl Into<String>, origin: EventOrigin) -> Self {
+        Self {
+            event_id: event_id.into(),
+            origin,
+            transformations: Vec::new(),
+            consumers: Vec::new(),
+        }
+    }
+
+    /// Record a transformation applied to the event.
+    pub fn record_transformation(&mut self, transformation: EventTransformation) {
+        self.transformations.push(transformation);
+    }
+
+    /// Record a downstream consumer of the event.
+    pub fn record_consumer(&mut self, consumer: EventConsumer) {
+        self.consumers.push(consumer);
+    }
 }
 
-impl EventSearchIndex {
+/// A node in the lineage graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LineageNode {
+    /// The origin of an event.
+    Origin(String),
+    /// A transformation stage applied to an event.
+    Transformation(String),
+    /// A downstream consumer of an event.
+    Consumer(String),
+}
+
+/// A directed edge in the lineage graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LineageEdge {
+    pub from: LineageNode,
+    pub to: LineageNode,
+}
+
+/// Graph representation connecting origins, transformations, and consumers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LineageGraph {
+    pub nodes: HashSet<LineageNode>,
+    pub edges: HashSet<LineageEdge>,
+}
+
+impl LineageGraph {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Index (or re-index) an event's metadata.
-    pub fn index_event(&mut self, event_id: impl Into<String>, metadata: EventMetadata) {
+    fn add_edge(&mut self, from: LineageNode, to: LineageNode) {
+        self.nodes.insert(from.clone());
+        self.nodes.insert(to.clone());
+        self.edges.insert(LineageEdge { from, to });
+    }
+
+    /// Build a lineage graph from a single event's lineage record.
+    pub fn from_lineage(lineage: &EventLineage) -> Self {
+        let mut graph = Self::new();
+        let origin = LineageNode::Origin(lineage.origin.source_system.clone());
+        graph.nodes.insert(origin.clone());
+
+        let mut previous = origin;
+        for transformation in &lineage.transformations {
+            let node = LineageNode::Transformation(transformation.stage.clone());
+            graph.add_edge(previous, node.clone());
+            previous = node;
+        }
+        for consumer in &lineage.consumers {
+            let node = LineageNode::Consumer(consumer.consumer.clone());
+            graph.add_edge(previous.clone(), node);
+        }
+        graph
+    }
+
+    /// Compute the downstream consumers reachable from a given node.
+    pub fn downstream_consumers(&self, from: &LineageNode) -> Vec<String> {
+        let mut visited: HashSet<LineageNode> = HashSet::new();
+        let mut queue: VecDeque<LineageNode> = VecDeque::new();
+        let mut consumers: Vec<String> = Vec::new();
+        queue.push_back(from.clone());
+        visited.insert(from.clone());
+
+        while let Some(node) = queue.pop_front() {
+            if let LineageNode::Consumer(name) = &node {
+                if !consumers.contains(name) {
+                    consumers.push(name.clone());
+                }
+            }
+            for edge in &self.edges {
+                if &edge.from == &node && visited.insert(edge.to.clone()) {
+                    queue.push_back(edge.to.clone());
+                }
+            }
+        }
+        consumers
+    }
+}
+
+/// Impact analysis for an event: which consumers are affected by a change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImpactAnalysis {
+    pub event_id: String,
+    pub affected_consumers: Vec<String>,
+    pub transformation_count: usize,
+}
+
+impl ImpactAnalysis {
+    /// Analyze the impact of an event based on its lineage record.
+    pub fn analyze(lineage: &EventLineage) -> Self {
+        let graph = LineageGraph::from_lineage(lineage);
+        let origin = LineageNode::Origin(lineage.origin.source_system.clone());
+        Self {
+            event_id: lineage.event_id.clone(),
+            affected_consumers: graph.downstream_consumers(&origin),
+            transformation_count: lineage.transformations.len(),
+        }
+    }
+}
+
+/// A compliance report summarizing lineage for a set of events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComplianceReport {
+    pub total_events: usize,
+    pub total_transformations: usize,
+    pub total_consumers: usize,
+    pub events: Vec<EventLineage>,
+}
+
+impl ComplianceReport {
+    pub fn from_lineages(lineages: &[EventLineage]) -> Self {
+        let total_transformations = lineages.iter().map(|l| l.transformations.len()).sum();
+        let total_consumers = lineages.iter().map(|l| l.consumers.len()).sum();
+        Self {
+            total_events: lineages.len(),
+            total_transformations,
+            total_consumers,
+            events: lineages.to_vec(),
+        }
+    }
+}
+
+/// Tracks lineage and provenance for events flowing through the pipeline.
+#[derive(Debug, Default)]
+pub struct LineageTracker {
+    lineages: HashMap<String, EventLineage>,
+}
+
+impl LineageTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register the origin of an event, starting its lineage record.
+    pub fn track_origin(&mut self, event_id: impl Into<String>, origin: EventOrigin) {
         let event_id = event_id.into();
-        self.remove_event(&event_id);
-
-        let mut term_freqs: HashMap<String, usize> = HashMap::new();
-        for field in metadata.searchable_fields() {
-            for token in tokenize(field) {
-                let stem = stem(&token);
-                if stem.is_empty() {
-                    continue;
-                }
-                *term_freqs.entry(stem).or_insert(0) += 1;
-            }
-        }
-
-        for (term, freq) in term_freqs {
-            self.inverted
-                .entry(term)
-                .or_default()
-                .insert(event_id.clone(), freq);
-        }
-        self.metadata.insert(event_id, metadata);
+        self.lineages
+            .entry(event_id.clone())
+            .or_insert_with(|| EventLineage::new(event_id, origin));
     }
 
-    /// Remove an event from the index.
-    pub fn remove_event(&mut self, event_id: &str) {
-        if self.metadata.remove(event_id).is_none() {
-            return;
+    /// Record a transformation applied to an event.
+    pub fn track_transformation(
+        &mut self,
+        event_id: &str,
+        transformation: EventTransformation,
+    ) {
+        if let Some(lineage) = self.lineages.get_mut(event_id) {
+            lineage.record_transformation(transformation);
         }
-        for postings in self.inverted.values_mut() {
-            postings.remove(event_id);
-        }
-        self.inverted.retain(|_, postings| !postings.is_empty());
     }
 
-    /// Full-text search with fuzzy matching, ranking and highlighting.
-    pub fn search(&self, query: &str) -> Vec<SearchHit> {
-        let query_terms: Vec<String> = tokenize(query)
-            .into_iter()
-            .map(|t| stem(&t))
-            .filter(|t| !t.is_empty())
-            .collect();
-
-        if query_terms.is_empty() {
-            return Vec::new();
+    /// Record a downstream consumer of an event.
+    pub fn track_consumer(&mut self, event_id: &str, consumer: EventConsumer) {
+        if let Some(lineage) = self.lineages.get_mut(event_id) {
+            lineage.record_consumer(consumer);
         }
+    }
 
-        let mut scores: HashMap<String, f64> = HashMap::new();
-        for term in &query_terms {
-            // Exact term matches rank highest.
-            if let Some(postings) = self.inverted.get(term) {
-                for (event_id, freq) in postings {
-                    *scores.entry(event_id.clone()).or_insert(0.0) += *freq as f64;
-                }
-            }
-            // Fuzzy matches contribute a discounted score.
-            for (indexed_term, postings) in &self.inverted {
-                if indexed_term == term {
-                    continue;
-                }
-                if let Some(distance) = fuzzy_distance(term, indexed_term) {
-                    let weight = 1.0 / (1.0 + distance as f64);
-                    for (event_id, freq) in postings {
-                        *scores.entry(event_id.clone()).or_insert(0.0) += *freq as f64 * weight;
-                    }
-                }
-            }
-        }
+    /// Retrieve the lineage record for an event.
+    pub fn lineage(&self, event_id: &str) -> Option<&EventLineage> {
+        self.lineages.get(event_id)
+    }
 
-        let mut hits: Vec<SearchHit> = scores
-            .into_iter()
-            .map(|(event_id, score)| {
-                let highlights = self
-                    .metadata
-                    .get(&event_id)
-                    .map(|m| highlight(m, &query_terms))
-                    .unwrap_or_default();
-                SearchHit { event_id, score, highlights }
-            })
-            .collect();
+    /// Build the lineage graph for an event.
+    pub fn graph(&self, event_id: &str) -> Option<LineageGraph> {
+        self.lineages.get(event_id).map(LineageGraph::from_lineage)
+    }
 
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.event_id.cmp(&b.event_id))
-        });
-        hits
+    /// Perform impact analysis for an event.
+    pub fn impact(&self, event_id: &str) -> Option<ImpactAnalysis> {
+        self.lineages.get(event_id).map(ImpactAnalysis::analyze)
+    }
+
+    /// Produce a compliance report across all tracked events.
+    pub fn compliance_report(&self) -> ComplianceReport {
+        let lineages: Vec<EventLineage> = self.lineages.values().cloned().collect();
+        ComplianceReport::from_lineages(&lineages)
     }
 }
 
-/// Split text into lowercase alphanumeric tokens.
-fn tokenize(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_lowercase())
-        .collect()
+/// Shared, thread-safe lineage tracker.
+pub type SharedLineageTracker = Arc<Mutex<LineageTracker>>;
+
+/// Create a new shared lineage tracker.
+pub fn shared_lineage_tracker() -> SharedLineageTracker {
+    Arc::new(Mutex::new(LineageTracker::new()))
 }
 
-/// Lightweight English stemmer applied to both indexed and query terms.
-fn stem(term: &str) -> String {
-    let term = term.to_lowercase();
-    for suffix in ["ingly", "edly", "ing", "ies", "ied", "es", "ed", "s"] {
-        if term.len() > suffix.len() + 2 && term.ends_with(suffix) {
-            let base = &term[..term.len() - suffix.len()];
-            return match suffix {
-                "ies" | "ied" => format!("{}y", base),
-                _ => base.to_string(),
-            };
-        }
-    }
-    term
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Bounded Levenshtein distance used for fuzzy matching.
-/// Returns `None` when the terms are further apart than the allowed threshold.
-fn fuzzy_distance(a: &str, b: &str) -> Option<usize> {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let max_len = a.len().max(b.len());
-    let threshold = if max_len <= 4 { 1 } else { 2 };
+    #[test]
+    fn tracks_origin_transformations_and_consumers() {
+        let mut tracker = LineageTracker::new();
+        tracker.track_origin(
+            "evt-1",
+            EventOrigin::new("contract-runtime", "alice", 1_000).with_identifier("tx-abc"),
+        );
+        tracker.track_transformation(
+            "evt-1",
+            EventTransformation::new("normalize", "pipeline", 1_010),
+        );
+        tracker.track_consumer("evt-1", EventConsumer::new("indexer", 1_020));
 
-    if a.len().abs_diff(b.len()) > threshold {
-        return None;
+        let lineage = tracker.lineage("evt-1").expect("lineage exists");
+        assert_eq!(lineage.origin.source_system, "contract-runtime");
+        assert_eq!(lineage.transformations.len(), 1);
+        assert_eq!(lineage.consumers.len(), 1);
     }
 
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut curr = vec![0usize; b.len() + 1];
-    for (i, ca) in a.iter().enumerate() {
-        curr[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
+    #[test]
+    fn builds_lineage_graph_and_impact() {
+        let mut tracker = LineageTracker::new();
+        tracker.track_origin("evt-2", EventOrigin::new("runtime", "bob", 2_000));
+        tracker.track_transformation(
+            "evt-2",
+            EventTransformation::new("redact", "pipeline", 2_010),
+        );
+        tracker.track_consumer("evt-2", EventConsumer::new("audit", 2_020));
+
+        let graph = tracker.graph("evt-2").expect("graph exists");
+        assert!(graph.nodes.contains(&LineageNode::Origin("runtime".into())));
+        assert!(graph
+            .nodes
+            .contains(&LineageNode::Transformation("redact".into())));
+
+        let impact = tracker.impact("evt-2").expect("impact exists");
+        assert_eq!(impact.affected_consumers, vec!["audit".to_string()]);
+        assert_eq!(impact.transformation_count, 1);
     }
 
-    let distance = prev[b.len()];
-    if distance <= threshold {
-        Some(distance)
-    } else {
-        None
-    }
-}
+    #[test]
+    fn produces_compliance_report() {
+        let mut tracker = LineageTracker::new();
+        tracker.track_origin("evt-3", EventOrigin::new("runtime", "carol", 3_000));
+        tracker.track_consumer("evt-3", EventConsumer::new("warehouse", 3_010));
 
-/// Produce highlighted snippets for the fields that matched the query terms.
-fn highlight(metadata: &EventMetadata, query_terms: &[String]) -> Vec<String> {
-    let terms: HashSet<&str> = query_terms.iter().map(|t| t.as_str()).collect();
-    let mut highlights = Vec::new();
-    for field in metadata.searchable_fields() {
-        let mut matched = false;
-        let mut rendered = String::new();
-        for token in field.split_whitespace() {
-            if !rendered.is_empty() {
-                rendered.push(' ');
-            }
-            let stemmed = stem(&token.to_lowercase());
-            if terms.contains(stemmed.as_str()) {
-                matched = true;
-                rendered.push_str("<em>");
-                rendered.push_str(token);
-                rendered.push_str("</em>");
-            } else {
-                rendered.push_str(token);
-            }
-        }
-        if matched {
-            highlights.push(rendered);
-        }
+        let report = tracker.compliance_report();
+        assert_eq!(report.total_events, 1);
+        assert_eq!(report.total_consumers, 1);
     }
-    highlights
-}
-
-/// Convenience wrapper exposing a ranked map of event id -> score.
-pub fn search_events(index: &EventSearchIndex, query: &str) -> BTreeMap<String, f64> {
-    index
-        .search(query)
-        .into_iter()
-        .map(|hit| (hit.event_id, hit.score))
-        .collect()
 }
