@@ -157,6 +157,29 @@ paths:
         "200":
           description: Current export status
 
+  /events/stream:
+    get:
+      summary: Stream audit events with server-sent events
+      operationId: streamEvents
+      tags: [events]
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/FilterType"
+        - $ref: "#/components/parameters/FilterSubmitter"
+        - $ref: "#/components/parameters/FilterStartTime"
+        - $ref: "#/components/parameters/FilterEndTime"
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
   /events:
     get:
       summary: List events with pagination and filtering
