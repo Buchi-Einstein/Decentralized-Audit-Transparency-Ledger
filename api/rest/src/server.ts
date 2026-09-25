@@ -243,6 +243,50 @@ app.get("/versions", versionsHandler(versionRegistry));
 // ── Versioned Routes (#271) ───────────────────────────────────────────────────
 
 const v1 = express.Router();
+const webhookAdmin = [bearerAuth, requireScopes(["admin:webhooks"]), requireRole("admin")];
+
+// Webhook management and testing (#435)
+v1.get("/webhooks", ...webhookAdmin, (_req, res) => {
+  res.json({ data: listWebhooks() });
+});
+
+v1.post("/webhooks", ...webhookAdmin, (req, res) => {
+  const { url, secret, eventTypes } = req.body ?? {};
+  if (!url || !secret) return res.status(400).json({ error: "url and secret are required" });
+  try {
+    const webhook = registerWebhook({ url, secret, eventTypes });
+    res.status(201).json({ data: { ...webhook, secret: "[redacted]" } });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "invalid webhook" });
+  }
+});
+
+v1.delete("/webhooks/:id", ...webhookAdmin, (req, res) => {
+  if (!removeWebhook(req.params.id)) return res.status(404).json({ error: "webhook not found" });
+  res.status(204).end();
+});
+
+v1.post("/webhooks/:id/test", ...webhookAdmin, async (req, res) => {
+  const webhook = getWebhook(req.params.id);
+  if (!webhook) return res.status(404).json({ error: "webhook not found" });
+  const event = {
+    id: `test-${Date.now()}`,
+    event_type: "webhook_test",
+    timestamp: Math.floor(Date.now() / 1000),
+  };
+  const delivery = await deliverWebhook(webhook, event);
+  res.status(delivery.status === "delivered" ? 200 : 502).json({ data: delivery });
+});
+
+v1.post("/webhooks/verify", (req, res) => {
+  const { secret, body, signature, timestamp } = req.body ?? {};
+  if (typeof secret !== "string" || typeof body !== "string" || typeof signature !== "string" || !Number.isInteger(timestamp)) {
+    return res.status(400).json({ error: "secret, body, signature, and integer timestamp are required" });
+  }
+  const result = verifySignature({ secret, body, signature, timestamp });
+  res.status(result.valid ? 200 : 401).json(result);
+});
+
 
 const eventFilterValidator = getRequestValidator("eventFilter");
 

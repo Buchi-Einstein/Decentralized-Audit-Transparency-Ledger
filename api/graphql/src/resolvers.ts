@@ -1,5 +1,6 @@
 import { PubSub, withFilter } from "graphql-subscriptions";
 import { requireRole, Role } from "./auth";
+import { deliverEvent } from "../../rest/src/webhooks";
 
 export const pubsub = new PubSub();
 export const EVENT_LOGGED = "EVENT_LOGGED";
@@ -100,6 +101,9 @@ export const resolvers = {
       };
       events.push(ev);
       void pubsub.publish(EVENT_LOGGED, { eventLogged: ev });
+      void deliverEvent(ev).catch((error) => {
+        console.error("Webhook delivery failed", error);
+      });
 
       // Track governance actions in the governance history
       const GOVERNANCE_TYPES = new Set([
