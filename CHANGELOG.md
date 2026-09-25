@@ -15,3 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compatibility checking between event schema versions.
 - Deprecation policies for event schema versions.
 - SDK support for event schema versioning.
+- Dedicated contract monitoring dashboard with layout for overview, events, governance, performance, and health with real-time alerts (#404).
+- Comprehensive developer portal with interactive API explorer, runnable code playground, and SDK guides for JS, Python, and Rust (#403).
+- Event compliance and regulatory reporting engine for SOX, GDPR, MiCA, automated report generation, and GDPR erasure preservation (#402).
+- Event replay protocol and state reconstruction from ledger history with incremental checkpointing, verification, and CLI tooling (#405).

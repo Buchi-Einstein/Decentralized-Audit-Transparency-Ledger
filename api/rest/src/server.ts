@@ -30,6 +30,7 @@ import {
 } from "@audit-ledger/security";
 import { authorizationServer, OAUTH_ISSUER, wafRuleEngine, createConfiguredRateLimitStore } from "./security";
 import { createComplianceRouter } from "./compliance";
+import { createReplayRouter } from "./replay";
 import {
   createCacheStore,
   createCacheBackedMiddleware,
@@ -134,6 +135,7 @@ v1Admin.use("/waf", requireScopes(["admin:waf"]), requireRole("admin"), wafAdmin
 
 app.use("/v1/admin", v1Admin);
 app.use("/v1", createComplianceRouter());
+app.use("/v1", createReplayRouter());
 
 function resolveContext(req: express.Request): { apiKey?: string; role?: Role } {
   const apiKey = (req.headers["x-api-key"] ?? req.headers["authorization"]?.replace("Bearer ", "")) as string | undefined;

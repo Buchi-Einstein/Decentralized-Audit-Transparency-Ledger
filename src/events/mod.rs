@@ -7,6 +7,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
+pub mod event;
+pub mod replay;
+pub mod search;
+
 /// A single event flowing through the system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {

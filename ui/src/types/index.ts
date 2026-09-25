@@ -30,3 +30,63 @@ export interface PaginatedResult<T> {
   page: number;
   pageSize: number;
 }
+
+export type DashboardTab = "overview" | "events" | "governance" | "performance" | "health";
+export type DashboardTimeRange = "1h" | "24h" | "7d" | "30d" | "custom";
+
+export interface GovernanceAction {
+  id: string;
+  type: "cap_change" | "role_assignment" | "pause" | "unpause" | "contract_upgrade" | "policy_update";
+  actor: string;
+  timestamp: number;
+  details: string;
+  status: "executed" | "queued" | "pending" | "rejected";
+  tx_hash?: string;
+}
+
+export interface GovernanceProposal {
+  id: string;
+  title: string;
+  action: string;
+  proposer: string;
+  approvals: number;
+  requiredApprovals: number;
+  status: "pending" | "approved" | "executed" | "vetoed" | "expired";
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface ContractHealthStatus {
+  isPaused: boolean;
+  ttlRemainingDays: number;
+  globalCapUtilized: number;
+  globalCapMax: number;
+  perTypeCapUtilized: Record<string, { current: number; max: number }>;
+  circuitBreakerActive: boolean;
+  rpcLatencyMs: number;
+  lastChecked: number;
+}
+
+export interface ContractAlert {
+  id: string;
+  severity: "critical" | "warning" | "info";
+  title: string;
+  description: string;
+  timestamp: number;
+  acknowledged: boolean;
+  resolved: boolean;
+  component: "contract" | "storage" | "rate_limit" | "bridge" | "governance";
+}
+
+export interface PerformanceMetrics {
+  tps: number;
+  peakTps: number;
+  avgGasCpu: number;
+  avgGasMem: number;
+  avgFeeStroops: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  p99LatencyMs: number;
+  bridgeLagMs: number;
+  bridgeQueueDepth: number;
+}
