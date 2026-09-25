@@ -96,6 +96,14 @@ app.use(
   })
 );
 
+// ── Per-client quotas with token-bucket burst handling (#444) ────────────────
+// On top of the global limiter above, each client (API key role, explicit
+// x-quota-tier header, or "default") gets its own token bucket with burst
+// headroom. Buckets live in the same shared store, so quotas coordinate
+// across instances when RATE_LIMIT_BACKEND=redis-cluster.
+
+app.use("/v1", createClientQuotaMiddleware(rateLimitStore));
+
 // ── OAuth2 / OIDC ────────────────────────────────────────────────────────────
 // Mounts /oauth/{authorize,token,jwks.json,introspect,revoke} and the
 // discovery documents. See src/security.ts for client registration and for
