@@ -14,7 +14,7 @@ import {
   ExportFilter,
 } from "./export";
 import { validateKey, generateKey, revokeKey, listKeys, type Role } from "./keys";
-import { decodeCursor, encodeCursor, setPaginationHeaders, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "./pagination";
+import { decodeCursor, encodeCursor, setPaginationHeaders } from "./pagination";
 import {
   securityHeaders,
   cspMiddleware,
@@ -142,12 +142,6 @@ function resolveContext(req: express.Request): { apiKey?: string; role?: Role } 
   return record ? { apiKey, role: record.role } : {};
 }
 
-function parseLimit(raw: string | undefined): number {
-  const parsed = parseInt(raw ?? "", 10);
-  if (Number.isNaN(parsed) || parsed <= 0) return DEFAULT_PAGE_SIZE;
-  return Math.min(parsed, MAX_PAGE_SIZE);
-}
-
 // ── Health Check Endpoints (#268) ─────────────────────────────────────────────
 
 const startTime = Date.now();
@@ -250,14 +244,41 @@ app.get("/versions", versionsHandler(versionRegistry));
 
 const v1 = express.Router();
 
-// GET /events - List all events with pagination
-v1.get("/events", (req, res) => {
-  const limit = parseLimit(req.query.limit as string);
-  const filter = req.query.filter ? JSON.parse(req.query.filter as string) : null;
+const eventFilterValidator = getRequestValidator("eventFilter");
 
-  let offset = 0;
-  if (req.query.cursor) {
-    const decoded = decodeCursor(req.query.cursor as string);
+function parseEventFilter(value: string | undefined): EventFilter | null | undefined {
+  if (!value) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return eventFilterValidator(parsed) ? (parsed as EventFilter) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function filterValidationError() {
+  return {
+    error: {
+      code: "VALIDATION_ERROR",
+      message: "Invalid query parameters",
+      details: [{ field: "filter", message: "must be a valid event filter object" }],
+    },
+  };
+}
+
+// GET /events - List all events with pagination
+v1.get("/events", validateQuery("eventListQuery"), validateResponse("eventListResponse"), (req, res) => {
+  const query = res.locals.validatedQuery as EventListQuery;
+  const filter = parseEventFilter(query.filter);
+  if (filter === undefined) {
+    return res.status(400).json(filterValidationError());
+  }
+
+  const limit = query.limit;
+  let offset = query.offset;
+  if (query.cursor) {
+    const decoded = decodeCursor(query.cursor);
     if (!decoded) {
       return res.status(400).json({ error: "Invalid cursor" });
     }
@@ -272,18 +293,18 @@ v1.get("/events", (req, res) => {
   const prevCursor = offset > 0 ? encodeCursor(Math.max(0, offset - limit)) : null;
 
   setPaginationHeaders(res, "/events", total, limit, offset, nextCursor, prevCursor);
-  res.json({ data: result });
+  res.json({ data: result, total, limit, offset });
 });
 
 // GET /events/:index - Get event by index
-v1.get("/events/:index", (req, res) => {
-  const index = parseInt(req.params.index);
-  if (isNaN(index) || index < 0) {
-    return res.status(400).json({ error: "index must be a non-negative integer" });
-  }
-
-  const ctx = resolveContext(req);
-  const result = resolvers.Query.event(null, { index }, ctx);
+v1.get(
+  "/events/:index",
+  validateParams("eventIndexParams"),
+  validateResponse("eventResponse"),
+  (req, res) => {
+    const { index } = res.locals.validatedParams as EventIndexParams;
+    const ctx = resolveContext(req);
+    const result = resolvers.Query.event(null, { index }, ctx);
 
     if (!result) {
       return res.status(404).json({
@@ -298,33 +319,40 @@ v1.get("/events/:index", (req, res) => {
 );
 
 // GET /events/type/:type - Get events by type with pagination
-v1.get("/events/type/:type", (req, res) => {
-  const type = req.params.type;
-  const limit = parseLimit(req.query.limit as string);
+v1.get(
+  "/events/type/:type",
+  validateParams("eventTypeParams"),
+  validateQuery("eventTypeQuery"),
+  validateResponse("eventListResponse"),
+  (req, res) => {
+    const { type } = res.locals.validatedParams as EventTypeParams;
+    const query = res.locals.validatedQuery as EventTypeQuery;
+    const limit = query.limit;
+    let offset = query.offset;
 
-  let offset = 0;
-  if (req.query.cursor) {
-    const decoded = decodeCursor(req.query.cursor as string);
-    if (!decoded) {
-      return res.status(400).json({ error: "Invalid cursor" });
+    if (query.cursor) {
+      const decoded = decodeCursor(query.cursor);
+      if (!decoded) {
+        return res.status(400).json({ error: "Invalid cursor" });
+      }
+      offset = decoded.index;
     }
-    offset = decoded.index;
+
+    const ctx = resolveContext(req);
+    const allByType = Array.from({ length: 1000 }, (_, i) => i)
+      .map((typeIndex) => resolvers.Query.eventByType(null, { type, typeIndex }, ctx))
+      .filter(Boolean);
+
+    const total = allByType.length;
+    const result = allByType.slice(offset, offset + limit);
+
+    const nextCursor = offset + limit < total ? encodeCursor(offset + limit) : null;
+    const prevCursor = offset > 0 ? encodeCursor(Math.max(0, offset - limit)) : null;
+
+    setPaginationHeaders(res, `/events/type/${type}`, total, limit, offset, nextCursor, prevCursor);
+    res.json({ data: result, total, limit, offset });
   }
-
-  const ctx = resolveContext(req);
-  const allByType = Array.from({ length: 1000 }, (_, i) => i)
-    .map((typeIndex) => resolvers.Query.eventByType(null, { type, typeIndex }, ctx))
-    .filter(Boolean);
-
-  const total = allByType.length;
-  const result = allByType.slice(offset, offset + limit);
-
-  const nextCursor = offset + limit < total ? encodeCursor(offset + limit) : null;
-  const prevCursor = offset > 0 ? encodeCursor(Math.max(0, offset - limit)) : null;
-
-  setPaginationHeaders(res, `/events/type/${type}`, total, limit, offset, nextCursor, prevCursor);
-  res.json({ data: result });
-});
+);
 
 // GET /stats - Get statistics
 v1.get("/stats", (req, res) => {
