@@ -2,7 +2,7 @@
 
 ## Overview
 
-This delivery implements comprehensive policy-as-code compliance automation for contract events in the AuditLedger system, fully satisfying **Issue #485**.
+This delivery implements comprehensive policy-as-code compliance automation for contract events in the AuditLedger system, fully satisfying **Issue #485**, and extends contract event validation with custom WASM validators per **Issue #418**.
 
 ## Implemented Components
 
@@ -32,3 +32,9 @@ This delivery implements comprehensive policy-as-code compliance automation for 
 4. **Architecture Documentation & ADR**:
    - `docs/adr/ADR-015-contract-event-compliance-policy-as-code.md`
    - `docs/compliance/contract-event-compliance-guide.md`
+
+5. **Custom WASM Event Validators (Issue #418)**:
+   - `WasmValidatorRegistry`: registers custom WASM validators keyed by event type and metadata field, with versioning and enable/disable controls.
+   - `WasmValidatorExecutor`: runs registered validators against event metadata in addition to schema validation, returning structured pass/fail results with diagnostics.
+   - Gas metering: each validator execution is charged against a configurable gas budget; execution halts and reports `gas_exhausted` when the budget is exceeded.
+   - SDK integration: the contract event SDK exposes `registerWasmValidator`, `validateEventMetadata`, and gas-budget configuration so callers can plug custom validators into the existing validation pipeline.
