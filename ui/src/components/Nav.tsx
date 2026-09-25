@@ -10,8 +10,10 @@ const NAV = [
   { href: "/explorer", label: "Event Explorer" },
   { href: "/search", label: "Search" },
   { href: "/export", label: "Export" },
+  { href: "/compliance", label: "Compliance" },
   { href: "/governance", label: "Governance" },
   { href: "/webhooks", label: "Webhooks" },
+  { href: "/developer", label: "Developer Portal" },
 ];
 
 const THEME_ORDER: Array<"dark" | "light" | "system"> = ["dark", "light", "system"];
