@@ -280,7 +280,7 @@ v1.get("/events", validateQuery("eventListQuery"), validateResponse("eventListRe
   if (query.cursor) {
     const decoded = decodeCursor(query.cursor);
     if (!decoded) {
-      return res.status(400).json({ error: "Invalid cursor" });
+      return problem(res, 400, "Invalid cursor", "cursor is malformed or unsupported");
     }
     offset = decoded.index;
   }
@@ -374,12 +374,7 @@ v1.get(
     const result = resolvers.Query.event(null, { index }, ctx);
 
     if (!result) {
-      return res.status(404).json({
-        error: {
-          code: "NOT_FOUND",
-          message: `Event with index ${index} not found`,
-        },
-      });
+      return problem(res, 404, "Event not found", `event with index ${index} was not found`);
     }
     res.json({ data: result });
   }
@@ -566,6 +561,15 @@ app.get("/events/type/:type", (req, res) => {
 });
 app.get("/stats", (_req, res) => {
   res.redirect(301, "/v1/stats");
+});
+
+// Consistent JSON errors for malformed requests and unexpected failures.
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (error instanceof SyntaxError && "body" in error) {
+    return problem(res, 400, "Malformed JSON", "request body must contain valid JSON");
+  }
+  console.error("Unhandled REST error", error);
+  return problem(res, 500, "Internal Server Error", "an unexpected error occurred");
 });
 
 if (require.main === module) {
