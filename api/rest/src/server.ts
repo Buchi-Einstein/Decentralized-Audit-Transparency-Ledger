@@ -235,20 +235,16 @@ app.use((req, res, next) => {
   res.setHeader("X-API-Version", LATEST_VERSION);
   res.setHeader("X-Supported-Versions", SUPPORTED_VERSIONS.join(", "));
 
-  const versionHeader = req.headers["accept-version"] as string | undefined;
-  const urlMatch = req.path.match(/^\/(v\d+)\//);
+const versionRegistry = versionRegistryFromEnv();
 
-  let requestedVersion = versionHeader ?? urlMatch?.[1] ?? LATEST_VERSION;
+app.use(
+  createVersioningMiddleware({
+    registry: versionRegistry,
+    migrationGuideUrl: "https://github.com/daddygokings-art/Decentralized-Audit-Transparency-Ledger/blob/master/docs/api-versioning.md",
+  })
+);
 
-  if (DEPRECATED_VERSIONS[requestedVersion]) {
-    res.setHeader("Deprecation", "true");
-    res.setHeader("Sunset", DEPRECATED_VERSIONS[requestedVersion]);
-    res.setHeader("X-Deprecation-Notice", `API version ${requestedVersion} is deprecated. Use ${LATEST_VERSION}.`);
-  }
-
-  (req as express.Request & { apiVersion?: string }).apiVersion = requestedVersion;
-  next();
-});
+app.get("/versions", versionsHandler(versionRegistry));
 
 // ── Versioned Routes (#271) ───────────────────────────────────────────────────
 
@@ -457,6 +453,11 @@ v1.get("/export/progress", (_req, res) => {
 });
 
 app.use("/v1", v1);
+
+// Deprecated legacy version (#445): v0 stays alive and fully served by the
+// same v1 routes until its scheduled sunset, so old clients keep working
+// while the deprecation window runs (see /versions and docs/api-versioning.md).
+app.use("/v0", v1);
 
 // Legacy unversioned routes (redirect to v1)
 app.get("/events", (req, res) => {
